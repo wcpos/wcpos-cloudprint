@@ -7,8 +7,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 )
+
+const ModeAdaptive = "adaptive"
 
 type Config struct {
 	ListenAddr        string        // RELAY_LISTEN (default ":8443")
@@ -34,12 +38,15 @@ func LoadConfig(getenv func(string) string) (*Config, error) {
 	if err != nil || len(secret) != 32 {
 		return nil, errors.New("RELAY_MASTER_SECRET must be 64 hex characters (32 bytes)")
 	}
-	public := getenv("RELAY_PUBLIC_URL")
+	public := strings.TrimRight(getenv("RELAY_PUBLIC_URL"), "/")
 	if public == "" {
 		return nil, errors.New("RELAY_PUBLIC_URL is required")
 	}
+	if pu, perr := url.Parse(public); perr != nil || pu.Scheme != "https" || pu.Host == "" || pu.Path != "" || pu.RawQuery != "" || pu.Fragment != "" {
+		return nil, errors.New("RELAY_PUBLIC_URL must be an https origin with no path or query, e.g. https://cloudprint.wcpos.com")
+	}
 	mode := get("RELAY_MODE", "transparent")
-	if mode != "transparent" && mode != "adaptive" {
+	if mode != "transparent" && mode != ModeAdaptive {
 		return nil, fmt.Errorf("RELAY_MODE must be transparent or adaptive, got %q", mode)
 	}
 	heartbeat, err := time.ParseDuration(get("RELAY_HEARTBEAT", "60s"))

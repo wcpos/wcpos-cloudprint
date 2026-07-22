@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -29,6 +30,17 @@ func IsPublicIP(ip net.IP) bool {
 		if ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 0 { // 192.0.0.0/24 (IETF)
 			return false
 		}
+		if (ip4[0] == 198 && ip4[1]&0xfe == 18) || // 198.18.0.0/15 (benchmarking)
+			(ip4[0] == 192 && ip4[1] == 88 && ip4[2] == 99) || // 192.88.99.0/24
+			ip4[0]&0xf0 == 0xf0 { // 240.0.0.0/4, including limited broadcast
+			return false
+		}
+		return true
+	}
+	ip16 := ip.To16()
+	if (ip16[0] == 0x20 && ip16[1] == 0x02) || // 2002::/16 (6to4)
+		bytes.Equal(ip16[:12], []byte{0x00, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0}) { // NAT64
+		return false
 	}
 	return true
 }
@@ -46,10 +58,18 @@ func SafeDialContext(ctx context.Context, network, addr string) (net.Conn, error
 		return nil, err
 	}
 	d := &net.Dialer{Timeout: 10 * time.Second}
+	var dialErr error
 	for _, ip := range ips {
 		if IsPublicIP(ip) {
-			return d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			conn, err := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			dialErr = err
 		}
+	}
+	if dialErr != nil {
+		return nil, fmt.Errorf("could not dial %q: %w", host, dialErr)
 	}
 	return nil, fmt.Errorf("refusing to dial %q: no public IP", host)
 }

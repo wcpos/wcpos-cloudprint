@@ -31,6 +31,10 @@ func TestClassifyBlock(t *testing.T) {
 		{"waf 403", mkResp(403, nil), "Forbidden", "http-403"},
 		{"rate limited", mkResp(429, nil), "", "http-429"},
 		{"maintenance page", mkResp(503, nil), "<html>busy</html>", "http-503"},
+		{"bare internal error", mkResp(500, nil), "oops", "http-500"},
+		{"bare bad gateway", mkResp(502, nil), "oops", "http-502"},
+		{"bare gateway timeout", mkResp(504, nil), "oops", "http-504"},
+		{"plugin 500 is not a block", mkResp(500, nil), `{"code":"wcpos_internal_error"}`, ""},
 		{"html where api expected", mkResp(200, nil), "<!DOCTYPE html><html>challenge</html>", "html-instead-of-api-response"},
 		{"sdp xml is legitimate", mkResp(200, nil), `<response success="true" code="" status=""/>`, ""},
 		{"soap envelope is legitimate", mkResp(200, nil), `<?xml version="1.0"?><s:Envelope></s:Envelope>`, ""},
@@ -120,7 +124,7 @@ func TestStatusEndpointReportsOriginState(t *testing.T) {
 	rl.Health.NoteBlock(out["site_key"], "cloudflare-challenge", rl.Now())
 
 	ts := strconv.FormatInt(rl.Now().Unix(), 10)
-	sig := Sign(mustHex(t, stored.HintSecret), ts, []byte("front"))
+	sig := Sign(mustHex(t, stored.HintSecret), http.MethodGet, "/api/status/"+out["site_key"], ts, []byte("front"))
 	req := httptest.NewRequest(http.MethodGet, "/api/status/"+out["site_key"]+"?printer_id=front", nil)
 	req.SetPathValue("key", out["site_key"])
 	req.Header.Set("X-Relay-Timestamp", ts)

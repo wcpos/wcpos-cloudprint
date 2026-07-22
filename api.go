@@ -34,7 +34,13 @@ func (rl *Relay) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := rl.Origin.Get(origin + "/wp-json/wcpos/v1/print-jobs/relay-verification")
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, origin+"/wp-json/wcpos/v1/print-jobs/relay-verification", nil)
+	if err != nil {
+		jsonError(w, http.StatusBadGateway, "could not reach site verification endpoint")
+		return
+	}
+	req.Header.Set("User-Agent", relayUA)
+	resp, err := rl.Origin.Do(req)
 	if err != nil {
 		jsonError(w, http.StatusBadGateway, "could not reach site verification endpoint")
 		return
@@ -82,14 +88,14 @@ func (rl *Relay) authedSite(w http.ResponseWriter, r *http.Request, payload []by
 		jsonError(w, http.StatusNotFound, "unknown site")
 		return Site{}, false
 	}
-	secret, err := hexDecode(site.HintSecret)
+	secret, err := hex.DecodeString(site.HintSecret)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "corrupt site record")
 		return Site{}, false
 	}
 	ts := r.Header.Get("X-Relay-Timestamp")
 	sig := r.Header.Get("X-Relay-Signature")
-	if VerifySignature(secret, ts, sig, payload, rl.Now(), 5*time.Minute) != nil {
+	if VerifySignature(secret, r.Method, r.URL.Path, ts, sig, payload, rl.Now(), 5*time.Minute) != nil {
 		jsonError(w, http.StatusUnauthorized, "invalid signature")
 		return Site{}, false
 	}
@@ -124,6 +130,10 @@ func (rl *Relay) handleStatus(w http.ResponseWriter, r *http.Request) {
 	printer := r.URL.Query().Get("printer_id")
 	site, ok := rl.authedSite(w, r, []byte(printer))
 	if !ok {
+		return
+	}
+	if printer == "" {
+		jsonError(w, http.StatusBadRequest, "printer_id is required")
 		return
 	}
 	state, signal := rl.Health.Status(site.Key, rl.Now())

@@ -66,7 +66,8 @@ func classifyBlock(resp *http.Response, body []byte) string {
 		return "cloudflare-" + m
 	}
 	switch resp.StatusCode {
-	case http.StatusUnauthorized, http.StatusForbidden:
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusGatewayTimeout,
+		http.StatusUnauthorized, http.StatusForbidden:
 		return "http-" + strconv.Itoa(resp.StatusCode)
 	case http.StatusTooManyRequests:
 		return "http-429"
@@ -98,7 +99,7 @@ func (rl *Relay) handleCloudPRNT(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, http.StatusBadRequest, "unreadable body")
 			return
 		}
-		adaptive := rl.Cfg.Mode == "adaptive"
+		adaptive := rl.Cfg.Mode == ModeAdaptive
 		if adaptive && !rl.State.ShouldForward(site.Key, printer, now, rl.Cfg.HeartbeatInterval, rl.Cfg.PendingTTL) {
 			localNoJob(w)
 			return
@@ -132,11 +133,12 @@ func (rl *Relay) handleCloudPRNT(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", ct)
 		}
 		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Length", strconv.Itoa(len(pollBody)))
 		w.WriteHeader(resp.StatusCode)
 		_, _ = w.Write(pollBody)
 
 	case http.MethodGet, http.MethodDelete: // fetch payload / confirm result
-		if !rl.FwdLim.Allow("fwd|" + site.Key) {
+		if !rl.FetchLim.Allow("fetch|" + site.Key) {
 			jsonError(w, http.StatusServiceUnavailable, "over rate limit")
 			return
 		}
@@ -157,6 +159,11 @@ func (rl *Relay) handleCloudPRNT(w http.ResponseWriter, r *http.Request) {
 		if ct := resp.Header.Get("Content-Type"); ct != "" {
 			w.Header().Set("Content-Type", ct)
 		}
+		if r.Method == http.MethodGet {
+			if cl := resp.Header.Get("Content-Length"); cl != "" {
+				w.Header().Set("Content-Length", cl)
+			}
+		}
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(resp.StatusCode)
 		_, _ = w.Write(head[:n])
@@ -168,7 +175,7 @@ func (rl *Relay) handleCloudPRNT(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSDP serves /p/{key}/epson-sdp. SDP multiplexes polls and print-result
-// reports over POST; result bodies (containing "success=") always forward.
+// reports over POST; results skip only adaptive polling gates.
 func (rl *Relay) handleSDP(w http.ResponseWriter, r *http.Request) {
 	site, ok := rl.Store.Get(r.PathValue("key"))
 	if !ok {
@@ -189,16 +196,16 @@ func (rl *Relay) handleSDP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	isResult := bytes.Contains(body, []byte("success="))
-	adaptive := rl.Cfg.Mode == "adaptive"
+	adaptive := rl.Cfg.Mode == ModeAdaptive
 	if adaptive && !isResult && !rl.State.ShouldForward(site.Key, printer, now, rl.Cfg.HeartbeatInterval, rl.Cfg.PendingTTL) {
 		localSDPAck(w)
 		return
 	}
-	if blocked, _ := rl.Health.Blocked(site.Key, now); blocked && !isResult {
+	if blocked, _ := rl.Health.Blocked(site.Key, now); blocked {
 		localSDPAck(w)
 		return
 	}
-	if !isResult && !rl.FwdLim.Allow("fwd|"+site.Key) {
+	if !rl.FwdLim.Allow("fwd|" + site.Key) {
 		localSDPAck(w)
 		return
 	}
@@ -211,7 +218,9 @@ func (rl *Relay) handleSDP(w http.ResponseWriter, r *http.Request) {
 	if !isResult {
 		rl.State.NoteForward(site.Key, printer, now)
 	}
-	sdpBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxPollBody))
+	// An SDP poll response carries the ePOS-Print job payload (may include
+	// images), not a tiny status blob — buffer up to the full payload cap.
+	sdpBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxPayloadBody))
 	if sig := classifyBlock(resp, sdpBody); sig != "" {
 		rl.Health.NoteBlock(site.Key, sig, now)
 		localSDPAck(w)
@@ -222,6 +231,7 @@ func (rl *Relay) handleSDP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", ct)
 	}
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Length", strconv.Itoa(len(sdpBody)))
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(sdpBody)
 }

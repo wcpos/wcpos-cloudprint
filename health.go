@@ -80,5 +80,13 @@ func (h *OriginHealth) Status(site string, now time.Time) (string, string) {
 	if now.Before(s.blockedTill) {
 		return "blocked", s.signal
 	}
+	if s.lastOK.IsZero() {
+		// Never a successful forward: a lingering signal means it has only
+		// ever failed; otherwise the state is simply not yet known.
+		if s.signal != "" {
+			return "blocked", s.signal
+		}
+		return "unknown", ""
+	}
 	return "ok", s.signal
 }

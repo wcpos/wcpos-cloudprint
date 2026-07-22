@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"strconv"
 	"testing"
 	"time"
 )
@@ -43,16 +44,26 @@ func TestShouldForwardHeartbeatAndHints(t *testing.T) {
 		t.Fatal("heartbeat must force a forward")
 	}
 
-	// Expired hint (older than ttl) does not force a forward.
-	p.NoteForward("s", "pr2", t0)
+	// Expired hint (older than ttl) with the heartbeat NOT due must not
+	// force a forward: keep a recent forward so only hint-expiry is tested.
 	p.Hint("s", "pr2", t0)
-	if p.ShouldForward("s", "pr2", t0.Add(ttl+time.Second), hb, ttl) {
-		// note: at t0+121s the 60s heartbeat IS due, so use a fresh forward first
-		t.Skip("covered below")
-	}
 	p.NoteForward("s", "pr2", t0.Add(ttl))
 	if p.ShouldForward("s", "pr2", t0.Add(ttl+30*time.Second), hb, ttl) {
-		t.Fatal("expired hint must not force a forward")
+		t.Fatal("expired hint with heartbeat not due must not force a forward")
+	}
+}
+
+func TestPollStateMapsResetAboveLimit(t *testing.T) {
+	p := NewPollState()
+	now := time.Unix(3000, 0)
+	for i := 0; i < 50002; i++ {
+		printer := strconv.Itoa(i)
+		p.Seen("s", printer, now)
+		p.Hint("s", printer, now)
+		p.NoteForward("s", printer, now)
+	}
+	if len(p.lastSeen) > 50001 || len(p.pending) > 50001 || len(p.lastFwd) > 50001 {
+		t.Fatalf("maps grew past reset bound: seen=%d pending=%d fwd=%d", len(p.lastSeen), len(p.pending), len(p.lastFwd))
 	}
 }
 

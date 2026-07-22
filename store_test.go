@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,10 +15,12 @@ func TestCanonicalOrigin(t *testing.T) {
 		{"https://Example.COM/", "https://example.com", false},
 		{"https://example.com", "https://example.com", false},
 		{"https://example.com:8443", "https://example.com:8443", false},
+		{"https://Example.com/Shop/", "https://example.com/Shop", false},
+		{"https://example.com/shop", "https://example.com/shop", false},
 		{"http://example.com", "", true},          // https only
-		{"https://example.com/wp-json", "", true}, // no paths
 		{"https://user:pw@example.com", "", true}, // no userinfo
 		{"https://example.com?x=1", "", true},     // no query
+		{"https://example.com/#fragment", "", true},
 		{"", "", true},
 	}
 	for _, c := range cases {
@@ -25,6 +28,39 @@ func TestCanonicalOrigin(t *testing.T) {
 		if c.wantErr != (err != nil) || got != c.want {
 			t.Errorf("CanonicalOrigin(%q) = %q, %v; want %q, err=%v", c.in, got, err, c.want, c.wantErr)
 		}
+	}
+}
+
+func TestStorePutFailureLeavesMapUnchanged(t *testing.T) {
+	s := &Store{path: filepath.Join(t.TempDir(), "missing", "sites.json"), sites: map[string]Site{
+		"old": {Key: "old", Origin: "https://old.example"},
+	}}
+	if err := s.Put(Site{Key: "new", Origin: "https://new.example"}); err == nil {
+		t.Fatal("Put must fail when the destination directory is absent")
+	}
+	if _, ok := s.Get("new"); ok {
+		t.Fatal("failed Put must not mutate the in-memory map")
+	}
+	if _, ok := s.Get("old"); !ok {
+		t.Fatal("failed Put must preserve existing sites")
+	}
+}
+
+func TestStoreCapsNewSitesButAllowsUpdates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sites.json")
+	s := &Store{path: path, sites: make(map[string]Site, 5000)}
+	for i := 0; i < 5000; i++ {
+		key := string(rune(i + 1))
+		s.sites[key] = Site{Key: key}
+	}
+	if err := s.Put(Site{Key: "new"}); err == nil {
+		t.Fatal("new site beyond cap must fail")
+	}
+	if err := s.Put(Site{Key: string(rune(1)), Origin: "https://updated.example"}); err != nil {
+		t.Fatalf("existing site update at cap failed: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("updated store was not persisted: %v", err)
 	}
 }
 

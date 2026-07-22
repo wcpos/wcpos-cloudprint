@@ -28,12 +28,18 @@ func pkey(site, printer string) string { return site + "|" + printer }
 func (p *PollState) Hint(site, printer string, now time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if len(p.pending) > 50000 {
+		p.pending = map[string]time.Time{}
+	}
 	p.pending[pkey(site, printer)] = now
 }
 
 func (p *PollState) Seen(site, printer string, now time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if len(p.lastSeen) > 50000 {
+		p.lastSeen = map[string]time.Time{}
+	}
 	p.lastSeen[pkey(site, printer)] = now
 }
 
@@ -64,6 +70,9 @@ func (p *PollState) ShouldForward(site, printer string, now time.Time, heartbeat
 func (p *PollState) NoteForward(site, printer string, now time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if len(p.lastFwd) > 50000 {
+		p.lastFwd = map[string]time.Time{}
+	}
 	p.lastFwd[pkey(site, printer)] = now
 }
 

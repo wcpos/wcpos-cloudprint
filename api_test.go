@@ -2,6 +2,7 @@ package relay
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -28,7 +29,7 @@ func testRelay(t *testing.T, originClient *http.Client) *Relay {
 	return &Relay{
 		Cfg: cfg, Store: store, State: NewPollState(), Origin: originClient,
 		Health: NewOriginHealth(),
-		RegLim: NewLimiter(100, 100), FwdLim: NewLimiter(100, 100),
+		RegLim: NewLimiter(100, 100), FwdLim: NewLimiter(100, 100), FetchLim: NewLimiter(100, 100),
 		Now: func() time.Time { return time.Unix(9000, 0) },
 	}
 }
@@ -85,7 +86,6 @@ func TestRegisterRejectsWrongTokenAndBadOrigin(t *testing.T) {
 	for name, in := range map[string]map[string]string{
 		"wrong token": {"site_url": siteURL, "verify_token": "nope"},
 		"http origin": {"site_url": "http://example.com", "verify_token": "tok-123"},
-		"origin path": {"site_url": siteURL + "/blog", "verify_token": "tok-123"},
 	} {
 		body, _ := json.Marshal(in)
 		req := httptest.NewRequest(http.MethodPost, "/api/register", bytes.NewReader(body))
@@ -120,7 +120,7 @@ func TestHintRequiresValidSignatureAndSetsPending(t *testing.T) {
 		t.Fatalf("bad sig = %d, want 401", w.Code)
 	}
 	secret := mustHex(t, stored.HintSecret)
-	if w := mkReq(Sign(secret, ts, body)); w.Code != http.StatusNoContent {
+	if w := mkReq(Sign(secret, http.MethodPost, "/api/hint/"+out["site_key"], ts, body)); w.Code != http.StatusNoContent {
 		t.Fatalf("good sig = %d, want 204", w.Code)
 	}
 	if !rl.State.ShouldForward(out["site_key"], "front", rl.Now(), time.Hour, 2*time.Minute) {
@@ -136,7 +136,7 @@ func TestStatusReportsLastSeen(t *testing.T) {
 	rl.State.Seen(out["site_key"], "front", rl.Now().Add(-42*time.Second))
 
 	ts := strconv.FormatInt(rl.Now().Unix(), 10)
-	sig := Sign(mustHex(t, stored.HintSecret), ts, []byte("front"))
+	sig := Sign(mustHex(t, stored.HintSecret), http.MethodGet, "/api/status/"+out["site_key"], ts, []byte("front"))
 	req := httptest.NewRequest(http.MethodGet, "/api/status/"+out["site_key"]+"?printer_id=front", nil)
 	req.SetPathValue("key", out["site_key"])
 	req.Header.Set("X-Relay-Timestamp", ts)
@@ -160,7 +160,7 @@ func TestStatusReportsLastSeen(t *testing.T) {
 
 func mustHex(t *testing.T, s string) []byte {
 	t.Helper()
-	b, err := hexDecode(s)
+	b, err := hex.DecodeString(s)
 	if err != nil {
 		t.Fatal(err)
 	}

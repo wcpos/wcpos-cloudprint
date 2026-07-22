@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -16,6 +17,7 @@ type fakeOrigin struct {
 	polls   atomic.Int64
 	gets    atomic.Int64
 	deletes atomic.Int64
+	sdps    atomic.Int64
 	ready   atomic.Bool
 }
 
@@ -41,6 +43,7 @@ func newFakeOrigin(t *testing.T) (*fakeOrigin, *httptest.Server) {
 			fo.deletes.Add(1)
 			fmt.Fprint(w, `{"ok":true}`)
 		case r.URL.Path == "/wp-json/wcpos/v1/print-jobs/epson-sdp":
+			fo.sdps.Add(1)
 			fmt.Fprint(w, `<response success="true" code="" status=""/>`)
 		default:
 			http.NotFound(w, r)
@@ -126,6 +129,9 @@ func TestGetAndDeleteAlwaysForward(t *testing.T) {
 	if w.Header().Get("Content-Type") != "application/octet-stream" {
 		t.Fatalf("content-type not forwarded: %q", w.Header().Get("Content-Type"))
 	}
+	if w.Header().Get("Content-Length") != strconv.Itoa(w.Body.Len()) {
+		t.Fatalf("content-length = %q, want %d", w.Header().Get("Content-Length"), w.Body.Len())
+	}
 
 	req = httptest.NewRequest(http.MethodDelete, "/p/"+key+"/cloudprnt?printer_id=front&pt=x&token=7&code=200%20OK", nil)
 	req.SetPathValue("key", key)
@@ -136,6 +142,41 @@ func TestGetAndDeleteAlwaysForward(t *testing.T) {
 	}
 	if fo.gets.Load() != 1 || fo.deletes.Load() != 1 {
 		t.Fatalf("gets=%d deletes=%d, want 1/1", fo.gets.Load(), fo.deletes.Load())
+	}
+}
+
+func TestFetchUsesSeparateLimiter(t *testing.T) {
+	fo, ts := newFakeOrigin(t)
+	rl, key, _ := adaptiveRelay(t, ts)
+	rl.FwdLim = NewLimiter(0, 0)
+	req := httptest.NewRequest(http.MethodGet, "/p/"+key+"/cloudprnt?printer_id=front", nil)
+	req.SetPathValue("key", key)
+	w := httptest.NewRecorder()
+	rl.handleCloudPRNT(w, req)
+	if w.Code != http.StatusOK || fo.gets.Load() != 1 {
+		t.Fatalf("fetch shared forward limiter: status=%d gets=%d", w.Code, fo.gets.Load())
+	}
+
+	rl.FetchLim = NewLimiter(0, 0)
+	w = httptest.NewRecorder()
+	rl.handleCloudPRNT(w, req)
+	if w.Code != http.StatusServiceUnavailable || fo.gets.Load() != 1 {
+		t.Fatalf("fetch limiter denial: status=%d gets=%d", w.Code, fo.gets.Load())
+	}
+}
+
+func TestBufferedResponsesSetContentLength(t *testing.T) {
+	_, ts := newFakeOrigin(t)
+	rl, key, _ := adaptiveRelay(t, ts)
+	if w := printerPoll(rl, key); w.Header().Get("Content-Length") != strconv.Itoa(w.Body.Len()) {
+		t.Fatalf("poll content-length = %q, want %d", w.Header().Get("Content-Length"), w.Body.Len())
+	}
+	req := httptest.NewRequest(http.MethodPost, "/p/"+key+"/epson-sdp?printer_id=ep1", nil)
+	req.SetPathValue("key", key)
+	w := httptest.NewRecorder()
+	rl.handleSDP(w, req)
+	if w.Header().Get("Content-Length") != strconv.Itoa(w.Body.Len()) {
+		t.Fatalf("SDP content-length = %q, want %d", w.Header().Get("Content-Length"), w.Body.Len())
 	}
 }
 
@@ -161,7 +202,7 @@ func TestUnknownSiteAndOriginDownAreSafe(t *testing.T) {
 }
 
 func TestSDPResultAlwaysForwardsPollGated(t *testing.T) {
-	_, ts := newFakeOrigin(t)
+	fo, ts := newFakeOrigin(t)
 	rl, key, now := adaptiveRelay(t, ts)
 
 	sdp := func(body string) *httptest.ResponseRecorder {
@@ -180,5 +221,89 @@ func TestSDPResultAlwaysForwardsPollGated(t *testing.T) {
 	// Result report is never gated even inside the heartbeat window.
 	if w := sdp(`ResponseFile=<response success="true" code="" status=""/>`); w.Code != 200 {
 		t.Fatalf("SDP result forward = %d", w.Code)
+	}
+
+	before := fo.sdps.Load()
+	rl.FwdLim = NewLimiter(0, 0)
+	if w := sdp(`success=true`); w.Code != 200 || w.Body.String() != sdpAck {
+		t.Fatalf("rate-limited result must get local ack: %d %q", w.Code, w.Body.String())
+	}
+	if fo.sdps.Load() != before {
+		t.Fatal("rate-limited result reached origin")
+	}
+
+	rl.FwdLim = NewLimiter(100, 100)
+	rl.Health.NoteBlock(key, "http-500", *now)
+	rl.Health.NoteBlock(key, "http-500", *now)
+	rl.Health.NoteBlock(key, "http-500", *now)
+	if w := sdp(`success=true`); w.Code != 200 || w.Body.String() != sdpAck {
+		t.Fatalf("breaker-blocked result must get local ack: %d %q", w.Code, w.Body.String())
+	}
+	if fo.sdps.Load() != before {
+		t.Fatal("breaker-blocked result reached origin")
+	}
+}
+
+func TestSubdirectoryOriginRegistersAndForwards(t *testing.T) {
+	var paths []string
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.UserAgent() != relayUA {
+			t.Errorf("User-Agent = %q, want %q", r.UserAgent(), relayUA)
+		}
+		switch r.URL.Path {
+		case "/shop/wp-json/wcpos/v1/print-jobs/relay-verification":
+			fmt.Fprint(w, `{"token":"tok-123"}`)
+		case "/shop/wp-json/wcpos/v1/print-jobs/cloudprnt":
+			fmt.Fprint(w, `{"jobReady":false}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+	rl := testRelay(t, ts.Client())
+	out := register(t, rl, ts.URL+"/shop/", "tok-123")
+	if w := printerPoll(rl, out["site_key"]); w.Code != http.StatusOK {
+		t.Fatalf("subdirectory poll = %d: %s", w.Code, w.Body)
+	}
+	want := []string{
+		"/shop/wp-json/wcpos/v1/print-jobs/relay-verification",
+		"/shop/wp-json/wcpos/v1/print-jobs/cloudprnt",
+	}
+	if fmt.Sprint(paths) != fmt.Sprint(want) {
+		t.Fatalf("paths = %v, want %v", paths, want)
+	}
+}
+
+// TestSDPLargePayloadNotTruncated guards the fix for SDP poll responses
+// carrying the ePOS-Print job payload (which can exceed the 8KB poll cap).
+func TestSDPLargePayloadNotTruncated(t *testing.T) {
+	const wantLen = 64 << 10 // 64KB > maxPollBody, < maxPayloadBody
+	big := "<epos>" + strings.Repeat("A", wantLen) + "</epos>"
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/wp-json/wcpos/v1/print-jobs/relay-verification" {
+			fmt.Fprint(w, `{"token":"tok-123"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+		fmt.Fprint(w, big)
+	}))
+	defer ts.Close()
+
+	rl := testRelay(t, ts.Client())
+	out := register(t, rl, ts.URL, "tok-123")
+	key := out["site_key"]
+
+	req := httptest.NewRequest(http.MethodPost, "/p/"+key+"/epson-sdp?printer_id=ep1",
+		strings.NewReader("m:1")) // not a result report; a plain poll
+	req.SetPathValue("key", key)
+	w := httptest.NewRecorder()
+	rl.handleSDP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if got := len(w.Body.String()); got != len(big) {
+		t.Fatalf("SDP payload truncated: got %d bytes, want %d", got, len(big))
 	}
 }

@@ -55,3 +55,14 @@ certbot certonly --standalone -d cloudprint.wcpos.com --key-type rsa --rsa-key-s
 ```
 
 Copy `fullchain.pem`/`privkey.pem` into `/opt/wcpos-cloudprint/certs/` as `relay.crt`/`relay.key` on each renewal (certbot `--deploy-hook`). After first issuance, verify the served chain against a real printer on factory TLS settings; if legacy firmware rejects the Let's Encrypt chain, switch to a commercial RSA certificate with an older root.
+
+## Container file ownership
+
+The image runs as the distroless `nonroot` user (uid **65532**). The bind-mounted `certs/` and `data/` directories must be accessible to that uid or the process fails to read its key / write `sites.json`:
+
+```
+sudo chown -R 65532:65532 /opt/wcpos-cloudprint/data
+sudo chmod 640 /opt/wcpos-cloudprint/certs/relay.key && sudo chown 65532 /opt/wcpos-cloudprint/certs/relay.key
+```
+
+Have the certbot `--deploy-hook` re-apply the key ownership after each renewal.
