@@ -38,3 +38,27 @@ func TestLoadConfigRejectsMissingOrShortSecret(t *testing.T) {
 		t.Fatal("want error for short secret")
 	}
 }
+
+func TestLoadConfigRejectsNonPositiveAdaptiveDurations(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{"zero heartbeat", "RELAY_HEARTBEAT", "0s"},
+		{"negative heartbeat", "RELAY_HEARTBEAT", "-1s"},
+		{"zero pending TTL", "RELAY_PENDING_TTL", "0s"},
+		{"negative pending TTL", "RELAY_PENDING_TTL", "-1s"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{
+				"RELAY_MASTER_SECRET": "6d61737465722d736563726574000000000000000000000000000000000000ff",
+				"RELAY_PUBLIC_URL":    "https://cloudprint.wcpos.com",
+				tc.key:                tc.value,
+			}
+			if _, err := LoadConfig(fakeEnv(env)); err == nil {
+				t.Fatalf("LoadConfig accepted %s=%s", tc.key, tc.value)
+			}
+		})
+	}
+}

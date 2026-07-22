@@ -22,8 +22,8 @@ WCPOS Cloud Print is a small multi-tenant service that terminates printer-compat
 | Endpoint | Auth | Request | Response |
 |---|---|---|---|
 | `POST /api/register` | none (rate-limited; proves consent via callback) | `{"site_url":"https://shop.example","verify_token":"<random>"}`; relay GETs `<site>/wp-json/wcpos/v1/print-jobs/relay-verification` expecting `{"token":"<same>"}` | `201 {"site_key":"<32hex>","hint_secret":"<64hex>","printer_base_url":"https://cloudprint.wcpos.com/p/<site_key>"}` |
-| `POST /api/hint/{site_key}` | `X-Relay-Timestamp` (unix) + `X-Relay-Signature` = hex HMAC-SHA256(hint_secret, ts + "." + raw body); ±5 min window | `{"printer_id":"<id>"}` | `204` |
-| `GET /api/status/{site_key}?printer_id=<id>` | same headers; signature payload = the printer_id string | — | `200 {"printer_id":"<id>","last_seen_seconds_ago":42|null,"origin_status":"ok|blocked|unknown","origin_block_signal":"cloudflare-challenge|http-403|…|"}` |
+| `POST /api/hint/{site_key}` | `X-Relay-Timestamp` (unix) and `X-Relay-Signature` = hex HMAC-SHA256(hint_secret, method + `"\n"` + path + `"\n"` + timestamp + `"\n"` + raw body); path excludes the query string; ±5 min window | `{"printer_id":"<id>"}` | `204` |
+| `GET /api/status/{site_key}?printer_id=<id>` | same headers and HMAC input; payload is the `printer_id` string | — | `200 {"printer_id":"<id>","last_seen_seconds_ago":42,"origin_status":"ok","origin_block_signal":"http-403"}`; last seen may be `null`, status is `ok`, `blocked`, or `unknown`, and the signal may be empty or identify Cloudflare or an HTTP status |
 | `/p/{site_key}/cloudprnt` | printer's existing `pt` query token, passed through untouched | Star CloudPRNT POST/GET/DELETE | pass-through (or local `{"jobReady":false}` when gated) |
 | `/p/{site_key}/epson-sdp` | same | Epson SDP POST | pass-through (or local `<response success="true" code="" status=""/>` when gated) |
 
@@ -42,7 +42,7 @@ The registry contains no print payloads. Back up `RELAY_MASTER_SECRET` separatel
 
 CI builds and pushes `ghcr.io/wcpos/wcpos-cloudprint` on every `v*` tag. No repository secrets are needed (GHCR push uses the automatic `GITHUB_TOKEN`). To deploy on the box:
 
-```
+```sh
 cd /opt/wcpos-cloudprint && docker compose pull && docker compose up -d
 ```
 
@@ -50,19 +50,19 @@ cd /opt/wcpos-cloudprint && docker compose pull && docker compose up -d
 
 Free Let's Encrypt certificate with an **RSA key**, issued on the box (no TLS-terminating proxy or load balancer in front — the service must own its listener, that is the whole point):
 
-```
+```sh
 certbot certonly --standalone -d cloudprint.wcpos.com --key-type rsa --rsa-key-size 2048
 ```
 
-Copy `fullchain.pem`/`privkey.pem` into `/opt/wcpos-cloudprint/certs/` as `relay.crt`/`relay.key` on each renewal (certbot `--deploy-hook`). After first issuance, verify the served chain against a real printer on factory TLS settings; if legacy firmware rejects the Let's Encrypt chain, switch to a commercial RSA certificate with an older root.
+Copy `fullchain.pem`/`privkey.pem` into `/opt/wcpos-cloudprint/certs/` as `relay.crt`/`relay.key` on each renewal (certbot `--deploy-hook`). The service checks the files every 12 hours; to use a renewed certificate immediately, have the deploy hook copy the files, re-apply the key ownership described below, and then run `docker compose restart relay`. After first issuance, verify the served chain against a real printer on factory TLS settings; if legacy firmware rejects the Let's Encrypt chain, switch to a commercial RSA certificate with an older root.
 
 ## Container file ownership
 
 The image runs as the distroless `nonroot` user (uid **65532**). The bind-mounted `certs/` and `data/` directories must be accessible to that uid or the process fails to read its key / write `sites.json`:
 
-```
+```sh
 sudo chown -R 65532:65532 /opt/wcpos-cloudprint/data
 sudo chmod 640 /opt/wcpos-cloudprint/certs/relay.key && sudo chown 65532 /opt/wcpos-cloudprint/certs/relay.key
 ```
 
-Have the certbot `--deploy-hook` re-apply the key ownership after each renewal.
+Have the certbot `--deploy-hook` re-apply the key ownership after each renewal and before restarting the relay.

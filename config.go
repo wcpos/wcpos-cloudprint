@@ -53,9 +53,15 @@ func LoadConfig(getenv func(string) string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("RELAY_HEARTBEAT: %w", err)
 	}
+	if heartbeat <= 0 {
+		return nil, errors.New("RELAY_HEARTBEAT must be greater than zero")
+	}
 	ttl, err := time.ParseDuration(get("RELAY_PENDING_TTL", "120s"))
 	if err != nil {
 		return nil, fmt.Errorf("RELAY_PENDING_TTL: %w", err)
+	}
+	if ttl <= 0 {
+		return nil, errors.New("RELAY_PENDING_TTL must be greater than zero")
 	}
 	return &Config{
 		ListenAddr:        get("RELAY_LISTEN", ":8443"),

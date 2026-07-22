@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -75,7 +77,12 @@ func classifyBlock(resp *http.Response, body []byte) string {
 		return "http-503"
 	}
 	trimmed := bytes.TrimSpace(body)
-	if bytes.HasPrefix(trimmed, []byte("<!DOCTYPE")) || bytes.HasPrefix(trimmed, []byte("<html")) {
+	prefix := trimmed
+	if len(prefix) > 16 {
+		prefix = prefix[:16]
+	}
+	prefix = bytes.ToLower(prefix)
+	if bytes.HasPrefix(prefix, []byte("<!doctype")) || bytes.HasPrefix(prefix, []byte("<html")) {
 		return "html-instead-of-api-response"
 	}
 	return ""
@@ -114,10 +121,13 @@ func (rl *Relay) handleCloudPRNT(w http.ResponseWriter, r *http.Request) {
 		}
 		resp, err := rl.originRequest(r, site, "cloudprnt", bytes.NewReader(body))
 		if err != nil {
+			if adaptive {
+				rl.State.NoteForward(site.Key, printer, now)
+			}
 			localNoJob(w) // origin down: stay calm, heartbeat retries later
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		rl.State.NoteForward(site.Key, printer, now)
 		pollBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxPollBody))
 		if sig := classifyBlock(resp, pollBody); sig != "" {
@@ -138,6 +148,10 @@ func (rl *Relay) handleCloudPRNT(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(pollBody)
 
 	case http.MethodGet, http.MethodDelete: // fetch payload / confirm result
+		if blocked, _ := rl.Health.Blocked(site.Key, now); blocked {
+			jsonError(w, http.StatusBadGateway, "origin blocked the relay")
+			return
+		}
 		if !rl.FetchLim.Allow("fetch|" + site.Key) {
 			jsonError(w, http.StatusServiceUnavailable, "over rate limit")
 			return
@@ -147,7 +161,7 @@ func (rl *Relay) handleCloudPRNT(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, http.StatusBadGateway, "origin unreachable")
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		head := make([]byte, 512)
 		n, _ := io.ReadFull(resp.Body, head)
 		if sig := classifyBlock(resp, head[:n]); sig != "" {
@@ -160,14 +174,14 @@ func (rl *Relay) handleCloudPRNT(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", ct)
 		}
 		if r.Method == http.MethodGet {
-			if cl := resp.Header.Get("Content-Length"); cl != "" {
-				w.Header().Set("Content-Length", cl)
+			if resp.ContentLength >= 0 && resp.ContentLength <= maxPayloadBody {
+				w.Header().Set("Content-Length", strconv.FormatInt(resp.ContentLength, 10))
 			}
 		}
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(resp.StatusCode)
 		_, _ = w.Write(head[:n])
-		_, _ = io.Copy(w, io.LimitReader(resp.Body, maxPayloadBody))
+		_, _ = io.Copy(w, io.LimitReader(resp.Body, int64(maxPayloadBody-n)))
 
 	default:
 		jsonError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -195,7 +209,13 @@ func (rl *Relay) handleSDP(w http.ResponseWriter, r *http.Request) {
 		localSDPAck(w)
 		return
 	}
-	isResult := bytes.Contains(body, []byte("success="))
+	resultBody := body
+	if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/x-www-form-urlencoded") {
+		if decoded, decodeErr := url.QueryUnescape(string(body)); decodeErr == nil {
+			resultBody = []byte(decoded)
+		}
+	}
+	isResult := bytes.Contains(resultBody, []byte("success="))
 	adaptive := rl.Cfg.Mode == ModeAdaptive
 	if adaptive && !isResult && !rl.State.ShouldForward(site.Key, printer, now, rl.Cfg.HeartbeatInterval, rl.Cfg.PendingTTL) {
 		localSDPAck(w)
@@ -214,7 +234,7 @@ func (rl *Relay) handleSDP(w http.ResponseWriter, r *http.Request) {
 		localSDPAck(w) // origin down: ack so the printer keeps cycling
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if !isResult {
 		rl.State.NoteForward(site.Key, printer, now)
 	}

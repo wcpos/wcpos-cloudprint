@@ -36,6 +36,8 @@ func TestClassifyBlock(t *testing.T) {
 		{"bare gateway timeout", mkResp(504, nil), "oops", "http-504"},
 		{"plugin 500 is not a block", mkResp(500, nil), `{"code":"wcpos_internal_error"}`, ""},
 		{"html where api expected", mkResp(200, nil), "<!DOCTYPE html><html>challenge</html>", "html-instead-of-api-response"},
+		{"lowercase doctype", mkResp(200, nil), "<!doctype html><html>challenge</html>", "html-instead-of-api-response"},
+		{"uppercase html", mkResp(200, nil), "<HTML>challenge</HTML>", "html-instead-of-api-response"},
 		{"sdp xml is legitimate", mkResp(200, nil), `<response success="true" code="" status=""/>`, ""},
 		{"soap envelope is legitimate", mkResp(200, nil), `<?xml version="1.0"?><s:Envelope></s:Envelope>`, ""},
 	}

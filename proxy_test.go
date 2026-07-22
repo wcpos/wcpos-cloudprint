@@ -145,6 +145,53 @@ func TestGetAndDeleteAlwaysForward(t *testing.T) {
 	}
 }
 
+func TestFetchHonorsOpenBreaker(t *testing.T) {
+	fo, ts := newFakeOrigin(t)
+	rl, key, now := adaptiveRelay(t, ts)
+	for i := 0; i < 3; i++ {
+		rl.Health.NoteBlock(key, "http-403", *now)
+	}
+
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		req := httptest.NewRequest(method, "/p/"+key+"/cloudprnt?printer_id=front&token=7", nil)
+		req.SetPathValue("key", key)
+		w := httptest.NewRecorder()
+		rl.handleCloudPRNT(w, req)
+		if w.Code != http.StatusBadGateway {
+			t.Fatalf("blocked %s status = %d, want %d", method, w.Code, http.StatusBadGateway)
+		}
+	}
+	if fo.gets.Load() != 0 || fo.deletes.Load() != 0 {
+		t.Fatalf("blocked fetch/confirm reached origin: gets=%d deletes=%d", fo.gets.Load(), fo.deletes.Load())
+	}
+}
+
+func TestOversizedFetchDoesNotAdvertiseOrWriteUncopiedBytes(t *testing.T) {
+	payload := strings.Repeat("x", maxPayloadBody+513)
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/wp-json/wcpos/v1/print-jobs/relay-verification" {
+			fmt.Fprint(w, `{"token":"tok-123"}`)
+			return
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+		fmt.Fprint(w, payload)
+	}))
+	defer ts.Close()
+
+	rl := testRelay(t, ts.Client())
+	out := register(t, rl, ts.URL, "tok-123")
+	req := httptest.NewRequest(http.MethodGet, "/p/"+out["site_key"]+"/cloudprnt?printer_id=front", nil)
+	req.SetPathValue("key", out["site_key"])
+	w := httptest.NewRecorder()
+	rl.handleCloudPRNT(w, req)
+	if got := w.Header().Get("Content-Length"); got != "" {
+		t.Fatalf("oversized fetch advertised content-length %q", got)
+	}
+	if w.Body.Len() > maxPayloadBody {
+		t.Fatalf("oversized fetch wrote %d bytes, cap is %d", w.Body.Len(), maxPayloadBody)
+	}
+}
+
 func TestFetchUsesSeparateLimiter(t *testing.T) {
 	fo, ts := newFakeOrigin(t)
 	rl, key, _ := adaptiveRelay(t, ts)
@@ -199,6 +246,10 @@ func TestUnknownSiteAndOriginDownAreSafe(t *testing.T) {
 	if w := printerPoll(rl, key); w.Code != 200 || !strings.Contains(w.Body.String(), `"jobReady":false`) {
 		t.Fatalf("origin-down poll = %d %s, want local jobReady:false", w.Code, w.Body)
 	}
+	*now = now.Add(5 * time.Second)
+	if rl.State.ShouldForward(key, "front", *now, rl.Cfg.HeartbeatInterval, rl.Cfg.PendingTTL) {
+		t.Fatal("failed adaptive poll was not recorded for heartbeat backoff")
+	}
 }
 
 func TestSDPResultAlwaysForwardsPollGated(t *testing.T) {
@@ -209,6 +260,7 @@ func TestSDPResultAlwaysForwardsPollGated(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/p/"+key+"/epson-sdp?printer_id=ep1&pt=x",
 			strings.NewReader(body))
 		req.SetPathValue("key", key)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		w := httptest.NewRecorder()
 		rl.handleSDP(w, req)
 		return w
@@ -221,6 +273,13 @@ func TestSDPResultAlwaysForwardsPollGated(t *testing.T) {
 	// Result report is never gated even inside the heartbeat window.
 	if w := sdp(`ResponseFile=<response success="true" code="" status=""/>`); w.Code != 200 {
 		t.Fatalf("SDP result forward = %d", w.Code)
+	}
+	encodedBefore := fo.sdps.Load()
+	if w := sdp(`ResponseFile=%3Cresponse+success%3D%22true%22+code%3D%22%22%2F%3E`); w.Code != 200 {
+		t.Fatalf("URL-encoded SDP result forward = %d", w.Code)
+	}
+	if fo.sdps.Load() != encodedBefore+1 {
+		t.Fatal("URL-encoded SDP result was gated as a poll")
 	}
 
 	before := fo.sdps.Load()
