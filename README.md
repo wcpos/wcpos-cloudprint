@@ -25,12 +25,12 @@ One secret, no other configuration — every other knob is a compile-time consta
 
 ## Deployment (Coolify)
 
-Any push to `main` is auto-deployed by Coolify, which builds the `Dockerfile` directly. App settings:
+Any push to `main` is auto-deployed by Coolify using the **Docker Compose build pack** (`docker-compose.yml` at the repo root). The compose file is deliberately minimal: no `ports:` mapping and no TLS anywhere — Traefik routes to the container's port 8080 and terminates TLS. App settings in Coolify:
 
-- **Port:** `8080`.
-- **Persistent volume** mounted at `/data` (holds `sites.json`). The image runs as the distroless `nonroot` user (uid **65532**), so the volume directory must be writable by that uid: `chown -R 65532:65532` it once from the host.
-- **Secret:** `RELAY_MASTER_SECRET` (the only env var).
-- **Health check:** disable Coolify's container health check — the distroless image has no shell for it to exec. Point external uptime monitoring at `https://cloudprint.wcpos.com/healthz` instead.
+- **Domain:** `https://cloudprint.wcpos.com` on the `relay` service (port 8080).
+- **Secret:** `RELAY_MASTER_SECRET` (the only env var; referenced by the compose file).
+- **Volume:** the compose file declares `relay-data` mounted at `/data` (holds `sites.json`). The image runs as the distroless `nonroot` user (uid **65532**), so the volume directory must be writable by that uid: `chown -R 65532:65532` its host path once.
+- **Health check:** none, on purpose — the distroless image has no shell for one to exec. Point external uptime monitoring at `https://cloudprint.wcpos.com/healthz` instead.
 - **DNS:** `cloudprint.wcpos.com` is a plain A record to the box. Never put it behind a CDN — a CDN edge in front of the relay recreates the exact printer-TLS failure this service exists to fix.
 
 Losing `sites.json` is recoverable without touching printers: site keys are deterministic, and the plugin re-registers automatically, so no separate backup is required. Losing `RELAY_MASTER_SECRET` is not — back it up in the team password manager.

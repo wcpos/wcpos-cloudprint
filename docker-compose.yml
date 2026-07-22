@@ -1,0 +1,13 @@
+# Coolify deploys this via its Docker Compose build pack: TLS and routing
+# are Traefik's job, so there is no ports: mapping and no cert mount. No
+# healthcheck either — the distroless image has no shell to exec one.
+services:
+  relay:
+    build: .
+    restart: unless-stopped
+    environment:
+      RELAY_MASTER_SECRET: ${RELAY_MASTER_SECRET}
+    volumes:
+      - relay-data:/data
+volumes:
+  relay-data:
