@@ -15,10 +15,7 @@ import (
 
 func testRelay(t *testing.T, originClient *http.Client) *Relay {
 	t.Helper()
-	cfg, err := LoadConfig(fakeEnv(map[string]string{
-		"RELAY_MASTER_SECRET": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
-		"RELAY_PUBLIC_URL":    "https://cloudprint.wcpos.com",
-	}))
+	secret, err := ParseMasterSecret("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +24,7 @@ func testRelay(t *testing.T, originClient *http.Client) *Relay {
 		t.Fatal(err)
 	}
 	return &Relay{
-		Cfg: cfg, Store: store, State: NewPollState(), Origin: originClient,
+		MasterSecret: secret, Store: store, State: NewPollState(), Origin: originClient,
 		Health: NewOriginHealth(),
 		RegLim: NewLimiter(100, 100), FwdLim: NewLimiter(100, 100), FetchLim: NewLimiter(100, 100),
 		Now: func() time.Time { return time.Unix(9000, 0) },

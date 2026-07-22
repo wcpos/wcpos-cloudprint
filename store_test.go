@@ -1,7 +1,6 @@
 package relay
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -43,24 +42,6 @@ func TestStorePutFailureLeavesMapUnchanged(t *testing.T) {
 	}
 	if _, ok := s.Get("old"); !ok {
 		t.Fatal("failed Put must preserve existing sites")
-	}
-}
-
-func TestStoreCapsNewSitesButAllowsUpdates(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sites.json")
-	s := &Store{path: path, sites: make(map[string]Site, 5000)}
-	for i := 0; i < 5000; i++ {
-		key := string(rune(i + 1))
-		s.sites[key] = Site{Key: key}
-	}
-	if err := s.Put(Site{Key: "new"}); err == nil {
-		t.Fatal("new site beyond cap must fail")
-	}
-	if err := s.Put(Site{Key: string(rune(1)), Origin: "https://updated.example"}); err != nil {
-		t.Fatalf("existing site update at cap failed: %v", err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("updated store was not persisted: %v", err)
 	}
 }
 

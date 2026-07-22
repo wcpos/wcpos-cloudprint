@@ -65,7 +65,7 @@ func (rl *Relay) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	site := Site{
-		Key:        SiteKey(rl.Cfg.MasterSecret, origin),
+		Key:        SiteKey(rl.MasterSecret, origin),
 		Origin:     origin,
 		HintSecret: hex.EncodeToString(secret),
 		CreatedAt:  rl.Now().UTC(),
@@ -77,7 +77,7 @@ func (rl *Relay) handleRegister(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]string{
 		"site_key":         site.Key,
 		"hint_secret":      site.HintSecret,
-		"printer_base_url": rl.Cfg.PublicBaseURL + "/p/" + site.Key,
+		"printer_base_url": PublicBaseURL + "/p/" + site.Key,
 	})
 }
 

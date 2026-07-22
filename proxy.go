@@ -106,8 +106,7 @@ func (rl *Relay) handleCloudPRNT(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, http.StatusBadRequest, "unreadable body")
 			return
 		}
-		adaptive := rl.Cfg.Mode == ModeAdaptive
-		if adaptive && !rl.State.ShouldForward(site.Key, printer, now, rl.Cfg.HeartbeatInterval, rl.Cfg.PendingTTL) {
+		if !rl.State.ShouldForward(site.Key, printer, now, HeartbeatInterval, PendingTTL) {
 			localNoJob(w)
 			return
 		}
@@ -121,9 +120,7 @@ func (rl *Relay) handleCloudPRNT(w http.ResponseWriter, r *http.Request) {
 		}
 		resp, err := rl.originRequest(r, site, "cloudprnt", bytes.NewReader(body))
 		if err != nil {
-			if adaptive {
-				rl.State.NoteForward(site.Key, printer, now)
-			}
+			rl.State.NoteForward(site.Key, printer, now)
 			localNoJob(w) // origin down: stay calm, heartbeat retries later
 			return
 		}
@@ -216,8 +213,7 @@ func (rl *Relay) handleSDP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	isResult := bytes.Contains(resultBody, []byte("success="))
-	adaptive := rl.Cfg.Mode == ModeAdaptive
-	if adaptive && !isResult && !rl.State.ShouldForward(site.Key, printer, now, rl.Cfg.HeartbeatInterval, rl.Cfg.PendingTTL) {
+	if !isResult && !rl.State.ShouldForward(site.Key, printer, now, HeartbeatInterval, PendingTTL) {
 		localSDPAck(w)
 		return
 	}

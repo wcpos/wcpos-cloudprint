@@ -10,15 +10,15 @@ import (
 // use httptest clients (the production client's SSRF dialer correctly
 // refuses loopback); Now is injectable for deterministic time.
 type Relay struct {
-	Cfg      *Config
-	Store    *Store
-	State    *PollState
-	Health   *OriginHealth
-	Origin   *http.Client
-	RegLim   *Limiter // registration attempts, per client IP
-	FwdLim   *Limiter // origin forwards, per site_key
-	FetchLim *Limiter // payload fetches/results, per site_key
-	Now      func() time.Time
+	MasterSecret []byte // derives deterministic site keys
+	Store        *Store
+	State        *PollState
+	Health       *OriginHealth
+	Origin       *http.Client
+	RegLim       *Limiter // registration attempts, per client IP
+	FwdLim       *Limiter // origin forwards, per site_key
+	FetchLim     *Limiter // payload fetches/results, per site_key
+	Now          func() time.Time
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

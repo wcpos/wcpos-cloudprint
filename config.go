@@ -1,78 +1,42 @@
-// Package relay implements the WCPOS cloud print relay: a multi-tenant,
-// printer-compatible TLS front for Star CloudPRNT / Epson Server Direct
-// Print polling, forwarding to registered WCPOS sites.
+// Package relay implements the WCPOS cloud print relay: a multi-tenant
+// front for Star CloudPRNT / Epson Server Direct Print polling printers,
+// forwarding to registered WCPOS sites. TLS is terminated by the Coolify
+// Traefik proxy in front of this container; the service itself speaks
+// plain HTTP on a single port.
 package relay
 
 import (
 	"encoding/hex"
 	"errors"
-	"fmt"
-	"net/url"
-	"strings"
 	"time"
 )
 
-const ModeAdaptive = "adaptive"
+// Deployment is fixed (Coolify, auto-deploy on push), so every knob that
+// used to be an env var is a constant — each env var is another way the
+// deploy can fail. The single remaining input is RELAY_MASTER_SECRET.
+const (
+	// PublicBaseURL is the printer-facing origin. Its DNS must stay a plain
+	// A record, never behind a CDN — a CDN edge in front of the relay would
+	// recreate the exact TLS failure this service exists to fix.
+	PublicBaseURL = "https://cloudprint.wcpos.com"
+	// ListenAddr is the plain-HTTP address the Coolify proxy forwards to.
+	ListenAddr = ":8080"
+	// SitesPath is the registry location on the Coolify persistent volume.
+	SitesPath = "/data/sites.json"
+	// HeartbeatInterval is the maximum interval between origin polls per
+	// printer; it bounds print latency when a hint is lost.
+	HeartbeatInterval = 60 * time.Second
+	// PendingTTL is the lifetime of a job-pending hint.
+	PendingTTL = 120 * time.Second
+)
 
-type Config struct {
-	ListenAddr        string        // RELAY_LISTEN (default ":8443")
-	HealthAddr        string        // RELAY_HEALTH (default "127.0.0.1:8080", plain HTTP /healthz)
-	CertFile          string        // RELAY_CERT
-	KeyFile           string        // RELAY_KEY
-	SitesPath         string        // RELAY_SITES (default "sites.json")
-	PublicBaseURL     string        // RELAY_PUBLIC_URL, e.g. https://cloudprint.wcpos.com
-	Mode              string        // RELAY_MODE: "transparent" (default) | "adaptive"
-	MasterSecret      []byte        // RELAY_MASTER_SECRET: 64 hex chars (32 bytes)
-	HeartbeatInterval time.Duration // RELAY_HEARTBEAT (default 60s)
-	PendingTTL        time.Duration // RELAY_PENDING_TTL (default 120s)
-}
-
-func LoadConfig(getenv func(string) string) (*Config, error) {
-	get := func(key, def string) string {
-		if v := getenv(key); v != "" {
-			return v
-		}
-		return def
-	}
-	secret, err := hex.DecodeString(getenv("RELAY_MASTER_SECRET"))
+// ParseMasterSecret validates RELAY_MASTER_SECRET, the service's only
+// configuration. It derives every deterministic site_key, so it must stay
+// stable for the life of the service (Coolify secret + password manager).
+func ParseMasterSecret(hexSecret string) ([]byte, error) {
+	secret, err := hex.DecodeString(hexSecret)
 	if err != nil || len(secret) != 32 {
 		return nil, errors.New("RELAY_MASTER_SECRET must be 64 hex characters (32 bytes)")
 	}
-	public := strings.TrimRight(getenv("RELAY_PUBLIC_URL"), "/")
-	if public == "" {
-		return nil, errors.New("RELAY_PUBLIC_URL is required")
-	}
-	if pu, perr := url.Parse(public); perr != nil || pu.Scheme != "https" || pu.Host == "" || pu.Path != "" || pu.RawQuery != "" || pu.Fragment != "" {
-		return nil, errors.New("RELAY_PUBLIC_URL must be an https origin with no path or query, e.g. https://cloudprint.wcpos.com")
-	}
-	mode := get("RELAY_MODE", "transparent")
-	if mode != "transparent" && mode != ModeAdaptive {
-		return nil, fmt.Errorf("RELAY_MODE must be transparent or adaptive, got %q", mode)
-	}
-	heartbeat, err := time.ParseDuration(get("RELAY_HEARTBEAT", "60s"))
-	if err != nil {
-		return nil, fmt.Errorf("RELAY_HEARTBEAT: %w", err)
-	}
-	if heartbeat <= 0 {
-		return nil, errors.New("RELAY_HEARTBEAT must be greater than zero")
-	}
-	ttl, err := time.ParseDuration(get("RELAY_PENDING_TTL", "120s"))
-	if err != nil {
-		return nil, fmt.Errorf("RELAY_PENDING_TTL: %w", err)
-	}
-	if ttl <= 0 {
-		return nil, errors.New("RELAY_PENDING_TTL must be greater than zero")
-	}
-	return &Config{
-		ListenAddr:        get("RELAY_LISTEN", ":8443"),
-		HealthAddr:        get("RELAY_HEALTH", "127.0.0.1:8080"),
-		CertFile:          getenv("RELAY_CERT"),
-		KeyFile:           getenv("RELAY_KEY"),
-		SitesPath:         get("RELAY_SITES", "sites.json"),
-		PublicBaseURL:     public,
-		Mode:              mode,
-		MasterSecret:      secret,
-		HeartbeatInterval: heartbeat,
-		PendingTTL:        ttl,
-	}, nil
+	return secret, nil
 }

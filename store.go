@@ -76,9 +76,6 @@ func OpenStore(path string) (*Store, error) {
 func (s *Store) Put(site Site) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, exists := s.sites[site.Key]; !exists && len(s.sites) >= 5000 {
-		return errors.New("site registry limit reached")
-	}
 	next := make(map[string]Site, len(s.sites)+1)
 	for key, existing := range s.sites {
 		next[key] = existing

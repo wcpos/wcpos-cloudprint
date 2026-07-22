@@ -1,6 +1,5 @@
 .env
 .git
-certs/
 data/
 wcpos-cloudprint
 PLAN.local.md

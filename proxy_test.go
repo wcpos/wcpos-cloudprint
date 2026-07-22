@@ -56,7 +56,6 @@ func newFakeOrigin(t *testing.T) (*fakeOrigin, *httptest.Server) {
 func adaptiveRelay(t *testing.T, ts *httptest.Server) (*Relay, string, *time.Time) {
 	t.Helper()
 	rl := testRelay(t, ts.Client())
-	rl.Cfg.Mode = "adaptive"
 	now := time.Unix(50000, 0)
 	rl.Now = func() time.Time { return now }
 	out := register(t, rl, ts.URL, "tok-123")
@@ -247,7 +246,7 @@ func TestUnknownSiteAndOriginDownAreSafe(t *testing.T) {
 		t.Fatalf("origin-down poll = %d %s, want local jobReady:false", w.Code, w.Body)
 	}
 	*now = now.Add(5 * time.Second)
-	if rl.State.ShouldForward(key, "front", *now, rl.Cfg.HeartbeatInterval, rl.Cfg.PendingTTL) {
+	if rl.State.ShouldForward(key, "front", *now, HeartbeatInterval, PendingTTL) {
 		t.Fatal("failed adaptive poll was not recorded for heartbeat backoff")
 	}
 }
