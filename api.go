@@ -34,7 +34,9 @@ func (rl *Relay) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, origin+"/wp-json/wcpos/v1/print-jobs/relay-verification", nil)
+	// The wcpos=1 marker matches how printers address the plugin; the plugin
+	// also serves this route unmarked, so this is belt-and-braces.
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, origin+"/wp-json/wcpos/v1/print-jobs/relay-verification?wcpos=1", nil)
 	if err != nil {
 		jsonError(w, http.StatusBadGateway, "could not reach site verification endpoint")
 		return
