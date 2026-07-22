@@ -1,4 +1,4 @@
-name: Deploy
+name: Build and publish image
 on:
   push:
     tags: ["v*"]
@@ -22,10 +22,3 @@ jobs:
           tags: |
             ghcr.io/wcpos/wcpos-cloudprint:latest
             ghcr.io/wcpos/wcpos-cloudprint:${{ github.ref_name }}
-      - name: Deploy to Hetzner
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.RELAY_SSH_HOST }}
-          username: ${{ secrets.RELAY_SSH_USER }}
-          key: ${{ secrets.RELAY_SSH_KEY }}
-          script: cd /opt/wcpos-cloudprint && docker compose pull && docker compose up -d

@@ -27,14 +27,6 @@ WCPOS Cloud Print is a small multi-tenant service that terminates printer-compat
 | `/p/{site_key}/cloudprnt` | printer's existing `pt` query token, passed through untouched | Star CloudPRNT POST/GET/DELETE | pass-through (or local `{"jobReady":false}` when gated) |
 | `/p/{site_key}/epson-sdp` | same | Epson SDP POST | pass-through (or local `<response success="true" code="" status=""/>` when gated) |
 
-## Certificate renewal
-
-1. Renew the commercial RSA DV certificate for `cloudprint.wcpos.com`, retaining a chain that ends at a long-established RSA root trusted by the supported printers. Do not use an ECDSA leaf certificate or place the hostname behind a CDN.
-2. Install the renewed private key at `/opt/wcpos-cloudprint/certs/relay.key` and the full chain, leaf first, at `/opt/wcpos-cloudprint/certs/relay.crt`. Keep the private key restricted while ensuring the container's non-root user can read it.
-3. From `/opt/wcpos-cloudprint`, run `docker compose up -d` to recreate the service with the renewed files.
-4. Confirm the served chain and TLS 1.2 handshake with `openssl s_client -connect cloudprint.wcpos.com:443 -tls1_2 -showcerts </dev/null`.
-
-Renew before the current certificate expires and keep an annual calendar reminder for this manual procedure.
 
 ## Registry backup cron
 
@@ -45,3 +37,21 @@ Create the remote directory and configure key-based access to the Hetzner Storag
 ```
 
 The registry contains no print payloads. Back up `RELAY_MASTER_SECRET` separately in the team password manager; it is not stored in `sites.json`.
+
+## Deploying
+
+CI builds and pushes `ghcr.io/wcpos/wcpos-cloudprint` on every `v*` tag. No repository secrets are needed (GHCR push uses the automatic `GITHUB_TOKEN`). To deploy on the box:
+
+```
+cd /opt/wcpos-cloudprint && docker compose pull && docker compose up -d
+```
+
+## Certificate
+
+Free Let's Encrypt certificate with an **RSA key**, issued on the box (no TLS-terminating proxy or load balancer in front — the service must own its listener, that is the whole point):
+
+```
+certbot certonly --standalone -d cloudprint.wcpos.com --key-type rsa --rsa-key-size 2048
+```
+
+Copy `fullchain.pem`/`privkey.pem` into `/opt/wcpos-cloudprint/certs/` as `relay.crt`/`relay.key` on each renewal (certbot `--deploy-hook`). After first issuance, verify the served chain against a real printer on factory TLS settings; if legacy firmware rejects the Let's Encrypt chain, switch to a commercial RSA certificate with an older root.
