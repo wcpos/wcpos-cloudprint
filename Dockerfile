@@ -9,4 +9,5 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /wcpos-cloudprint ./cmd
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /wcpos-cloudprint /wcpos-cloudprint
 USER nonroot
+EXPOSE 8080
 ENTRYPOINT ["/wcpos-cloudprint"]
