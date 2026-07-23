@@ -36,7 +36,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              relay.ListenAddr,
-		Handler:           rl.Handler(),
+		Handler:           relay.LogRequests(rl.Handler()),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
