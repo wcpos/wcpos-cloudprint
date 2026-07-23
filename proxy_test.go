@@ -365,3 +365,127 @@ func TestSDPLargePayloadNotTruncated(t *testing.T) {
 		t.Fatalf("SDP payload truncated: got %d bytes, want %d", got, len(big))
 	}
 }
+
+// TestPathCredentialRoutesRebuildOriginQuery covers the TSP100IV failure mode:
+// the printer URL-encodes the configured query string (&->%26, =->%3D), so
+// printer_id/pt never survive as parameters — but the path arrives verbatim.
+// Path-credential routes must ignore the mangled query and rebuild the real
+// one from the path when forwarding.
+func TestPathCredentialRoutesRebuildOriginQuery(t *testing.T) {
+	type hit struct {
+		query  string
+		header http.Header
+	}
+	var hits []hit
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/wp-json/wcpos/v1/print-jobs/relay-verification":
+			fmt.Fprint(w, `{"token":"tok-123"}`)
+		case "/wp-json/wcpos/v1/print-jobs/cloudprnt":
+			hits = append(hits, hit{r.URL.RawQuery, r.Header.Clone()})
+			if r.Method == http.MethodGet {
+				w.Header().Set("Content-Type", "application/octet-stream")
+				_, _ = w.Write([]byte{0x1b, 0x40})
+				return
+			}
+			fmt.Fprint(w, `{"jobReady":false}`)
+		case "/wp-json/wcpos/v1/print-jobs/epson-sdp":
+			hits = append(hits, hit{r.URL.RawQuery, r.Header.Clone()})
+			fmt.Fprint(w, `<response success="true" code="" status=""/>`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	rl := testRelay(t, ts.Client())
+	now := time.Unix(50000, 0)
+	rl.Now = func() time.Time { return now }
+	key := register(t, rl, ts.URL, "tok-123")["site_key"]
+	h := rl.Handler()
+
+	// The printer's actual on-the-wire query: its own t= cache-buster plus the
+	// configured query with every separator percent-encoded. Must be ignored.
+	mangled := "?t=1784822084&wcpos=1%26printer_id%3Dwrong%26pt%3Dwrong"
+	// url.Values.Encode sorts keys alphabetically; the printer's own t=
+	// cache-buster is kept, the mangled blob in wcpos is overwritten.
+	want := "printer_id=front&pt=secret-token&t=1784822084&wcpos=1"
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPost,
+		"/p/"+key+"/front/secret-token/cloudprnt"+mangled,
+		strings.NewReader(`{"status":"23 6 0 0 0 0 0 0 0"}`)))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"jobReady":false`) {
+		t.Fatalf("path-credential poll = %d %q", w.Code, w.Body.String())
+	}
+
+	// GET: firmware appends its own correctly-encoded job params — they
+	// must survive the credential rebuild.
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+		"/p/"+key+"/front/secret-token/cloudprnt"+mangled+"&token=7&type=application%2Foctet-stream", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("path-credential fetch = %d %q", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	sdp := httptest.NewRequest(http.MethodPost,
+		"/p/"+key+"/back/sdp-token/epson-sdp"+mangled,
+		strings.NewReader("ID=local_printer&Name=TM-T88"))
+	sdp.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	h.ServeHTTP(w, sdp)
+	if w.Code != http.StatusOK {
+		t.Fatalf("path-credential sdp = %d %q", w.Code, w.Body.String())
+	}
+
+	if len(hits) != 3 {
+		t.Fatalf("origin hits = %d, want 3", len(hits))
+	}
+	wantQueries := []string{
+		want,
+		"printer_id=front&pt=secret-token&t=1784822084&token=7&type=application%2Foctet-stream&wcpos=1",
+		"printer_id=back&pt=sdp-token&t=1784822084&wcpos=1",
+	}
+	for i, hit := range hits {
+		if hit.query != wantQueries[i] {
+			t.Errorf("hit %d origin query = %q, want %q", i, hit.query, wantQueries[i])
+		}
+		if hit.header.Get("X-WCPOS") != "1" {
+			t.Errorf("hit %d missing X-WCPOS header", i)
+		}
+	}
+}
+
+// Legacy query-credential routes must keep passing the printer's query through
+// untouched — existing installs have that URL burned into printer config.
+func TestLegacyQueryRoutePassesQueryThrough(t *testing.T) {
+	var got string
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/wp-json/wcpos/v1/print-jobs/relay-verification":
+			fmt.Fprint(w, `{"token":"tok-123"}`)
+		case "/wp-json/wcpos/v1/print-jobs/cloudprnt":
+			got = r.URL.RawQuery
+			fmt.Fprint(w, `{"jobReady":false}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	rl := testRelay(t, ts.Client())
+	now := time.Unix(50000, 0)
+	rl.Now = func() time.Time { return now }
+	key := register(t, rl, ts.URL, "tok-123")["site_key"]
+
+	w := httptest.NewRecorder()
+	rl.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost,
+		"/p/"+key+"/cloudprnt?wcpos=1&printer_id=front&pt=secret-token",
+		strings.NewReader(`{"status":"23 6 0 0 0 0 0 0 0"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("legacy poll = %d %q", w.Code, w.Body.String())
+	}
+	if got != "wcpos=1&printer_id=front&pt=secret-token" {
+		t.Errorf("legacy origin query = %q, want pass-through", got)
+	}
+}

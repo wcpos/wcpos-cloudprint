@@ -1,4 +1,5 @@
 /.env
 /data/
 /wcpos-cloudprint
+/.worktrees/
 PLAN.local.md

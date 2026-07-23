@@ -20,8 +20,12 @@ One secret, no other configuration — every other knob is a compile-time consta
 | `POST /api/hint/{site_key}` | `X-Relay-Timestamp` (unix) and `X-Relay-Signature` = hex HMAC-SHA256(hint_secret, method + `"\n"` + path + `"\n"` + timestamp + `"\n"` + raw body); path excludes the query string; ±5 min window | `{"printer_id":"<id>"}` | `204` |
 | `GET /api/status/{site_key}?printer_id=<id>` | same headers and HMAC input; payload is the `printer_id` string | — | `200 {"printer_id":"<id>","last_seen_seconds_ago":42,"origin_status":"ok","origin_block_signal":"http-403"}`; last seen may be `null`, status is `ok`, `blocked`, or `unknown`, and the signal may be empty or identify Cloudflare or an HTTP status |
 | `GET /healthz` | none | — | `200 ok` |
-| `/p/{site_key}/cloudprnt` | printer's existing `pt` query token, passed through untouched | Star CloudPRNT POST/GET/DELETE | pass-through (or local `{"jobReady":false}` when gated) |
-| `/p/{site_key}/epson-sdp` | same | Epson SDP POST | pass-through (or local `<response success="true" code="" status=""/>` when gated) |
+| `/p/{site_key}/{printer_id}/{pt}/cloudprnt` | `pt` token in the path; the relay replaces `wcpos`, `printer_id`, and `pt` from the path while preserving the printer's runtime query parameters | Star CloudPRNT POST/GET/DELETE | pass-through (or local `{"jobReady":false}` when gated) |
+| `/p/{site_key}/{printer_id}/{pt}/epson-sdp` | same | Epson SDP POST | pass-through (or local `<response success="true" code="" status=""/>` when gated) |
+| `/p/{site_key}/cloudprnt` | legacy: printer's existing `pt` query token, passed through untouched | Star CloudPRNT POST/GET/DELETE | pass-through |
+| `/p/{site_key}/epson-sdp` | legacy: same | Epson SDP POST | pass-through |
+
+Path-credential URLs exist because Star printers (verified on a TSP100IV) URL-encode the configured query string on the wire — every `&` becomes `%26` — so `printer_id` and `pt` never arrive as query parameters. The path is transmitted verbatim. The relay replaces the credential values from the path and forwards the printer's runtime parameters, such as `t`, `token`, and `type`. New printer URLs are always issued in path form; the query form remains for URLs already burned into printer configs.
 
 ## Deployment (Coolify)
 
