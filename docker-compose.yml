@@ -9,5 +9,11 @@ services:
       RELAY_MASTER_SECRET: ${RELAY_MASTER_SECRET}
     volumes:
       - relay-data:/data
+    # Bound access-log disk use: 3 × 10 MB rotated files, ~30 MB max on the box.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 volumes:
   relay-data:
