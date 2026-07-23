@@ -11,6 +11,12 @@ import (
 // string, so access logs never carry the end-to-end printer credential (D5).
 var ptRedact = regexp.MustCompile(`(pt=)[^&]*`)
 
+// pathCreds matches path-credential printer URLs (/p/{key}/{printer}/{token}/…)
+// so the token segment can be masked and the printer id logged. The mux clones
+// the request before handlers run, so PathValue is not visible in middleware;
+// legacy two-segment paths (/p/{key}/cloudprnt) carry no token and never match.
+var pathCreds = regexp.MustCompile(`^(/p/[^/]+/([^/]+)/)[^/]+(/.+)$`)
+
 // statusRecorder captures the response status and byte count for access logging.
 type statusRecorder struct {
 	http.ResponseWriter
@@ -47,9 +53,15 @@ func LogRequests(next http.Handler) http.Handler {
 		start := time.Now()
 		next.ServeHTTP(rec, r)
 		query := ptRedact.ReplaceAllString(r.URL.RawQuery, "${1}<redacted>")
+		path := r.URL.Path
+		printer := r.URL.Query().Get("printer_id")
+		if m := pathCreds.FindStringSubmatch(path); m != nil {
+			path = m[1] + "<redacted>" + m[3]
+			printer = m[2]
+		}
 		log.Printf(
 			"req method=%s path=%s query=%q printer_id=%q status=%d bytes=%d dur=%s",
-			r.Method, r.URL.Path, query, r.URL.Query().Get("printer_id"),
+			r.Method, path, query, printer,
 			rec.status, rec.bytes, time.Since(start).Round(time.Millisecond),
 		)
 	})

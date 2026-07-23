@@ -68,3 +68,23 @@ func TestLogRequestsSkipsHealthz(t *testing.T) {
 		t.Fatalf("healthz should not be logged, got: %q", buf.String())
 	}
 }
+
+func TestLogRequestsRedactsPathTokenAndExtractsPrinter(t *testing.T) {
+	buf := captureLog(t)
+	h := LogRequests(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/p/abc123/front/super-secret-token/cloudprnt?t=1784822084", nil)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	out := buf.String()
+	if strings.Contains(out, "super-secret-token") {
+		t.Fatalf("path token leaked into log: %q", out)
+	}
+	if !strings.Contains(out, "path=/p/abc123/front/<redacted>/cloudprnt") {
+		t.Fatalf("path token not redacted: %q", out)
+	}
+	if !strings.Contains(out, `printer_id="front"`) {
+		t.Fatalf("printer id not extracted from path: %q", out)
+	}
+}

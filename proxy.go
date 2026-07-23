@@ -33,13 +33,30 @@ func localSDPAck(w http.ResponseWriter) {
 	_, _ = w.Write([]byte(sdpAck))
 }
 
+// printerCredentials resolves a request's printer identity and the query
+// string to forward to the origin. Path-credential routes rebuild the exact
+// `wcpos=1&printer_id=…&pt=…` query the plugin expects (the printer never
+// transmitted one it didn't mangle); legacy routes pass the printer's query
+// through untouched.
+func printerCredentials(r *http.Request) (printer, forwardQuery string) {
+	if p := r.PathValue("printer"); p != "" {
+		q := url.Values{
+			"wcpos":      {"1"},
+			"printer_id": {p},
+			"pt":         {r.PathValue("token")},
+		}
+		return p, q.Encode()
+	}
+	return r.URL.Query().Get("printer_id"), r.URL.RawQuery
+}
+
 // originRequest re-issues the printer's request against the registered
-// origin. Only the query string, method, body and Content-Type survive; no
-// other client headers cross the boundary in either direction.
-func (rl *Relay) originRequest(r *http.Request, site Site, endpoint string, body io.Reader) (*http.Response, error) {
+// origin. Only the resolved query string, method, body and Content-Type
+// survive; no other client headers cross the boundary in either direction.
+func (rl *Relay) originRequest(r *http.Request, site Site, endpoint, forwardQuery string, body io.Reader) (*http.Response, error) {
 	u := site.Origin + "/wp-json/wcpos/v1/print-jobs/" + endpoint
-	if r.URL.RawQuery != "" {
-		u += "?" + r.URL.RawQuery
+	if forwardQuery != "" {
+		u += "?" + forwardQuery
 	}
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, u, body)
 	if err != nil {
@@ -49,6 +66,7 @@ func (rl *Relay) originRequest(r *http.Request, site Site, endpoint string, body
 		req.Header.Set("Content-Type", ct)
 	}
 	req.Header.Set("User-Agent", relayUA)
+	req.Header.Set("X-WCPOS", "1")
 	if pua := r.UserAgent(); pua != "" {
 		req.Header.Set("X-WCPOS-Printer-Agent", pua)
 	}
@@ -95,7 +113,7 @@ func (rl *Relay) handleCloudPRNT(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusNotFound, "unknown site")
 		return
 	}
-	printer := r.URL.Query().Get("printer_id")
+	printer, forwardQuery := printerCredentials(r)
 	now := rl.Now()
 	rl.State.Seen(site.Key, printer, now)
 
@@ -118,7 +136,7 @@ func (rl *Relay) handleCloudPRNT(w http.ResponseWriter, r *http.Request) {
 			localNoJob(w)
 			return
 		}
-		resp, err := rl.originRequest(r, site, "cloudprnt", bytes.NewReader(body))
+		resp, err := rl.originRequest(r, site, "cloudprnt", forwardQuery, bytes.NewReader(body))
 		if err != nil {
 			rl.State.NoteForward(site.Key, printer, now)
 			localNoJob(w) // origin down: stay calm, heartbeat retries later
@@ -153,7 +171,7 @@ func (rl *Relay) handleCloudPRNT(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, http.StatusServiceUnavailable, "over rate limit")
 			return
 		}
-		resp, err := rl.originRequest(r, site, "cloudprnt", nil)
+		resp, err := rl.originRequest(r, site, "cloudprnt", forwardQuery, nil)
 		if err != nil {
 			jsonError(w, http.StatusBadGateway, "origin unreachable")
 			return
@@ -197,7 +215,7 @@ func (rl *Relay) handleSDP(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	printer := r.URL.Query().Get("printer_id")
+	printer, forwardQuery := printerCredentials(r)
 	now := rl.Now()
 	rl.State.Seen(site.Key, printer, now)
 
@@ -225,7 +243,7 @@ func (rl *Relay) handleSDP(w http.ResponseWriter, r *http.Request) {
 		localSDPAck(w)
 		return
 	}
-	resp, err := rl.originRequest(r, site, "epson-sdp", bytes.NewReader(body))
+	resp, err := rl.originRequest(r, site, "epson-sdp", forwardQuery, bytes.NewReader(body))
 	if err != nil {
 		localSDPAck(w) // origin down: ack so the printer keeps cycling
 		return
