@@ -3,6 +3,7 @@ package relay
 import (
 	"log"
 	"net/http"
+	"net/url"
 	"regexp"
 	"time"
 )
@@ -52,13 +53,19 @@ func LogRequests(next http.Handler) http.Handler {
 		rec := &statusRecorder{ResponseWriter: w}
 		start := time.Now()
 		next.ServeHTTP(rec, r)
-		query := ptRedact.ReplaceAllString(r.URL.RawQuery, "${1}<redacted>")
-		path := r.URL.Path
+		query := r.URL.RawQuery
+		path := r.URL.EscapedPath()
 		printer := r.URL.Query().Get("printer_id")
 		if m := pathCreds.FindStringSubmatch(path); m != nil {
 			path = m[1] + "<redacted>" + m[3]
 			printer = m[2]
+			if decoded, err := url.QueryUnescape(query); err == nil {
+				query = decoded
+			} else {
+				query = ""
+			}
 		}
+		query = ptRedact.ReplaceAllString(query, "${1}<redacted>")
 		log.Printf(
 			"req method=%s path=%s query=%q printer_id=%q status=%d bytes=%d dur=%s",
 			r.Method, path, query, printer,

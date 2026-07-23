@@ -88,3 +88,37 @@ func TestLogRequestsRedactsPathTokenAndExtractsPrinter(t *testing.T) {
 		t.Fatalf("printer id not extracted from path: %q", out)
 	}
 }
+
+func TestLogRequestsRedactsEscapedSlashPathToken(t *testing.T) {
+	buf := captureLog(t)
+	h := LogRequests(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/p/abc123/front/super-secret%2Ftoken-tail/cloudprnt", nil)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	out := buf.String()
+	if strings.Contains(out, "super-secret") || strings.Contains(out, "token-tail") {
+		t.Fatalf("escaped-slash path token leaked into log: %q", out)
+	}
+	if !strings.Contains(out, "path=/p/abc123/front/<redacted>/cloudprnt") {
+		t.Fatalf("escaped-slash path token not redacted: %q", out)
+	}
+}
+
+func TestLogRequestsRedactsMangledPathCredentialQuery(t *testing.T) {
+	buf := captureLog(t)
+	h := LogRequests(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/p/abc123/front/path-token/cloudprnt?wcpos=1%26printer_id%3Dfront%26pt%3Dsuper-secret-token", nil)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	out := buf.String()
+	if strings.Contains(out, "super-secret-token") {
+		t.Fatalf("mangled query token leaked into log: %q", out)
+	}
+	if !strings.Contains(out, "pt=<redacted>") {
+		t.Fatalf("mangled query token not redacted: %q", out)
+	}
+}
