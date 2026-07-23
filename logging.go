@@ -3,14 +3,16 @@ package relay
 import (
 	"log"
 	"net/http"
-	"net/url"
 	"regexp"
 	"time"
 )
 
 // ptRedact masks the printer's pt token wherever it appears in a logged query
 // string, so access logs never carry the end-to-end printer credential (D5).
-var ptRedact = regexp.MustCompile(`(pt=)[^&]*`)
+// It also matches the percent-encoded `pt%3D` form: Star printers mangle the
+// configured query (&→%26, =→%3D), and a real token inside that blob must not
+// leak on any route — legacy query URLs included.
+var ptRedact = regexp.MustCompile(`((?:^|&|%26)pt(?:=|%3[Dd]))[^&]*`)
 
 // pathCreds matches path-credential printer URLs (/p/{key}/{printer}/{token}/…)
 // so the token segment can be masked and the printer id logged. The mux clones
@@ -53,19 +55,15 @@ func LogRequests(next http.Handler) http.Handler {
 		rec := &statusRecorder{ResponseWriter: w}
 		start := time.Now()
 		next.ServeHTTP(rec, r)
-		query := r.URL.RawQuery
+		// The query is logged raw — the mangled encoding is diagnostic
+		// signal — with every pt form redacted by ptRedact below.
+		query := ptRedact.ReplaceAllString(r.URL.RawQuery, "${1}<redacted>")
 		path := r.URL.EscapedPath()
 		printer := r.URL.Query().Get("printer_id")
 		if m := pathCreds.FindStringSubmatch(path); m != nil {
 			path = m[1] + "<redacted>" + m[3]
 			printer = m[2]
-			if decoded, err := url.QueryUnescape(query); err == nil {
-				query = decoded
-			} else {
-				query = ""
-			}
 		}
-		query = ptRedact.ReplaceAllString(query, "${1}<redacted>")
 		log.Printf(
 			"req method=%s path=%s query=%q printer_id=%q status=%d bytes=%d dur=%s",
 			r.Method, path, query, printer,
