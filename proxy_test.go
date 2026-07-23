@@ -407,8 +407,9 @@ func TestPathCredentialRoutesRebuildOriginQuery(t *testing.T) {
 	// The printer's actual on-the-wire query: its own t= cache-buster plus the
 	// configured query with every separator percent-encoded. Must be ignored.
 	mangled := "?t=1784822084&wcpos=1%26printer_id%3Dwrong%26pt%3Dwrong"
-	// url.Values.Encode sorts keys alphabetically.
-	want := "printer_id=front&pt=secret-token&wcpos=1"
+	// url.Values.Encode sorts keys alphabetically; the printer's own t=
+	// cache-buster is kept, the mangled blob in wcpos is overwritten.
+	want := "printer_id=front&pt=secret-token&t=1784822084&wcpos=1"
 
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodPost,
@@ -418,9 +419,11 @@ func TestPathCredentialRoutesRebuildOriginQuery(t *testing.T) {
 		t.Fatalf("path-credential poll = %d %q", w.Code, w.Body.String())
 	}
 
+	// GET: firmware appends its own correctly-encoded job params — they
+	// must survive the credential rebuild.
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
-		"/p/"+key+"/front/secret-token/cloudprnt"+mangled, nil))
+		"/p/"+key+"/front/secret-token/cloudprnt"+mangled+"&token=7&type=application%2Foctet-stream", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("path-credential fetch = %d %q", w.Code, w.Body.String())
 	}
@@ -438,7 +441,11 @@ func TestPathCredentialRoutesRebuildOriginQuery(t *testing.T) {
 	if len(hits) != 3 {
 		t.Fatalf("origin hits = %d, want 3", len(hits))
 	}
-	wantQueries := []string{want, want, "printer_id=back&pt=sdp-token&wcpos=1"}
+	wantQueries := []string{
+		want,
+		"printer_id=front&pt=secret-token&t=1784822084&token=7&type=application%2Foctet-stream&wcpos=1",
+		"printer_id=back&pt=sdp-token&t=1784822084&wcpos=1",
+	}
 	for i, hit := range hits {
 		if hit.query != wantQueries[i] {
 			t.Errorf("hit %d origin query = %q, want %q", i, hit.query, wantQueries[i])

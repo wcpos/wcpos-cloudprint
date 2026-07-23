@@ -34,17 +34,18 @@ func localSDPAck(w http.ResponseWriter) {
 }
 
 // printerCredentials resolves a request's printer identity and the query
-// string to forward to the origin. Path-credential routes rebuild the exact
-// `wcpos=1&printer_id=…&pt=…` query the plugin expects (the printer never
-// transmitted one it didn't mangle); legacy routes pass the printer's query
-// through untouched.
+// string to forward to the origin. Path-credential routes rebuild the
+// `wcpos=1&printer_id=…&pt=…` credentials the plugin expects (the printer
+// never transmitted ones it didn't mangle) while keeping the printer's own
+// runtime parameters — the GET/DELETE job `token`, `type`, result `code`,
+// cache-buster `t` — which firmware appends correctly encoded. Legacy routes
+// pass the printer's query through untouched.
 func printerCredentials(r *http.Request) (printer, forwardQuery string) {
 	if p := r.PathValue("printer"); p != "" {
-		q := url.Values{
-			"wcpos":      {"1"},
-			"printer_id": {p},
-			"pt":         {r.PathValue("token")},
-		}
+		q := r.URL.Query()
+		q.Set("wcpos", "1") // overwrites the mangled configured-query blob, if any
+		q.Set("printer_id", p)
+		q.Set("pt", r.PathValue("token"))
 		return p, q.Encode()
 	}
 	return r.URL.Query().Get("printer_id"), r.URL.RawQuery
