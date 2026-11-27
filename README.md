@@ -16,7 +16,7 @@ One secret, no other configuration — every other knob is a compile-time consta
 
 | Endpoint | Auth | Request | Response |
 |---|---|---|---|
-| `POST /api/register` | none (rate-limited; proves consent via callback) | `{"site_url":"https://shop.example","verify_token":"<random>"}`; relay GETs `<site>/wp-json/wcpos/v1/print-jobs/relay-verification` expecting `{"token":"<same>"}` | `201 {"site_key":"<32hex>","hint_secret":"<64hex>","printer_base_url":"https://cloudprint.wcpos.com/p/<site_key>"}` |
+| `POST /api/register` | none (rate-limited; proves consent via callback) | `{"site_url":"https://shop.example","verify_token":"<random>","verify_challenge":"<random, optional>"}`; relay GETs `<site>/wp-json/wcpos/v1/print-jobs/relay-verification` (with `challenge=<verify_challenge>` when one was sent, so the site answers only the relay) expecting `{"token":"<verify_token>"}` | `201 {"site_key":"<32hex>","hint_secret":"<64hex>","printer_base_url":"https://cloudprint.wcpos.com/p/<site_key>"}` |
 | `POST /api/hint/{site_key}` | `X-Relay-Timestamp` (unix) and `X-Relay-Signature` = hex HMAC-SHA256(hint_secret, method + `"\n"` + path + `"\n"` + timestamp + `"\n"` + raw body); path excludes the query string; ±5 min window | `{"printer_id":"<id>"}` | `204` |
 | `GET /api/status/{site_key}?printer_id=<id>` | same headers and HMAC input; payload is the `printer_id` string | — | `200 {"printer_id":"<id>","last_seen_seconds_ago":42,"origin_status":"ok","origin_block_signal":"http-403"}`; last seen may be `null`, status is `ok`, `blocked`, or `unknown`, and the signal may be empty or identify Cloudflare or an HTTP status |
 | `GET /healthz` | none | — | `200 ok` |
