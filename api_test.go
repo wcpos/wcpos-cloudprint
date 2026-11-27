@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -162,4 +163,36 @@ func mustHex(t *testing.T, s string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// A site that sends verify_challenge releases its token only to a caller that
+// presents it, so the relay must hand it back on the callback. A site that
+// sends none (plugins before the challenge existed) gets the bare callback.
+func TestRegisterPresentsVerifyChallengeOnCallback(t *testing.T) {
+	for name, challenge := range map[string]string{"with challenge": "chal-456&x=1", "without": ""} {
+		var got url.Values
+		site := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got = r.URL.Query()
+			fmt.Fprint(w, `{"token":"tok-123"}`)
+		}))
+		in := map[string]string{"site_url": site.URL, "verify_token": "tok-123"}
+		if challenge != "" {
+			in["verify_challenge"] = challenge
+		}
+		body, _ := json.Marshal(in)
+		req := httptest.NewRequest(http.MethodPost, "/api/register", bytes.NewReader(body))
+		req.RemoteAddr = "203.0.113.5:1234"
+		w := httptest.NewRecorder()
+		testRelay(t, site.Client()).handleRegister(w, req)
+		site.Close()
+		if w.Code != http.StatusCreated {
+			t.Fatalf("%s: register = %d: %s", name, w.Code, w.Body)
+		}
+		if got.Get("challenge") != challenge || got.Has("challenge") != (challenge != "") {
+			t.Errorf("%s: callback query = %v, want challenge %q", name, got, challenge)
+		}
+		if got.Get("wcpos") != "1" {
+			t.Errorf("%s: callback lost the wcpos marker: %v", name, got)
+		}
+	}
 }

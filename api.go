@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -23,6 +24,8 @@ func (rl *Relay) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		SiteURL     string `json:"site_url"`
 		VerifyToken string `json:"verify_token"`
+		// Optional: plugins before the challenge existed send none.
+		VerifyChallenge string `json:"verify_challenge"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&in); err != nil || in.VerifyToken == "" {
 		jsonError(w, http.StatusBadRequest, "site_url and verify_token are required")
@@ -36,7 +39,15 @@ func (rl *Relay) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// The wcpos=1 marker matches how printers address the plugin; the plugin
 	// also serves this route unmarked, so this is belt-and-braces.
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, origin+"/wp-json/wcpos/v1/print-jobs/relay-verification?wcpos=1", nil)
+	// The verification endpoint is public. A plugin that sends verify_challenge
+	// releases its token only to a caller presenting that value, which nobody
+	// but this relay holds, so an anonymous poller can neither read the token
+	// nor use it up before this callback arrives.
+	verifyURL := origin + "/wp-json/wcpos/v1/print-jobs/relay-verification?wcpos=1"
+	if in.VerifyChallenge != "" {
+		verifyURL += "&challenge=" + url.QueryEscape(in.VerifyChallenge)
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, verifyURL, nil)
 	if err != nil {
 		jsonError(w, http.StatusBadGateway, "could not reach site verification endpoint")
 		return
